@@ -1,15 +1,12 @@
 <?php
 // ============================================================
-// INTERPRETER.PHP — Executor / Interpretador
-// Percorre a AST e executa o programa
-// Suporta: execução completa e execução passo a passo
+// INTERPRETER.PHP — Van Language v2.0
+// Execução com escopo local/global, for, while, funções,
+// float, string, template
 // ============================================================
 
 require_once __DIR__ . '/semantic.php';
 
-// ============================================================
-// RuntimeError — erro em tempo de execução
-// ============================================================
 class MiniRuntimeError extends Exception {
     public int $linhaCodigo;
     public function __construct(string $msg, int $linha = 0) {
@@ -18,266 +15,338 @@ class MiniRuntimeError extends Exception {
     }
 }
 
-// ============================================================
-// Passo — representa uma etapa da execução passo a passo
-// ============================================================
 class Passo {
-    public int    $numero;
-    public string $descricao;
-    public string $instrucao;
-    public array  $variaveis;   // snapshot das variáveis naquele instante
-    public ?string $saida;      // saída gerada neste passo (se houver)
-    public int    $linha;
+    public int     $numero;
+    public string  $descricao;
+    public string  $instrucao;
+    public array   $variaveis;
+    public ?string $saida;
+    public int     $linha;
 
-    public function __construct(
-        int $numero, string $descricao, string $instrucao,
-        array $variaveis, ?string $saida, int $linha
-    ) {
-        $this->numero     = $numero;
-        $this->descricao  = $descricao;
-        $this->instrucao  = $instrucao;
-        $this->variaveis  = $variaveis;
-        $this->saida      = $saida;
-        $this->linha      = $linha;
+    public function __construct(int $numero, string $descricao, string $instrucao,
+                                array $variaveis, ?string $saida, int $linha) {
+        $this->numero    = $numero;
+        $this->descricao = $descricao;
+        $this->instrucao = $instrucao;
+        $this->variaveis = $variaveis;
+        $this->saida     = $saida;
+        $this->linha     = $linha;
     }
 }
 
 // ============================================================
-// Interpretador
-// ============================================================
 class Interpretador {
 
-    private array  $vars     = [];   // tabela de variáveis em tempo de execução
-    private array  $passos   = [];   // histórico passo a passo
-    private int    $numPasso = 0;
-    private array  $inputs   = [];   // valores de INPUT fornecidos externamente
-    private int    $iterMax  = 1000; // proteção contra loop infinito
-    private string $saida    = '';
+    private array  $global      = [];
+    private array  $local       = [];
+    private bool   $emFuncao    = false;
+    private array  $funcoes     = [];
+    private array  $passos      = [];
+    private int    $numPasso    = 0;
+    private string $saida       = '';
+    private array  $inputs      = [];
+    private int    $iterMax     = 1000;
+    private bool   $returnFlag  = false;
 
-    public function __construct(array $inputs = []) {
-        $this->inputs = $inputs;
-    }
+    public function __construct(array $inputs = []) { $this->inputs = $inputs; }
 
-    // ── Execução completa ─────────────────────────────────────
     public function executar(array $ast): array {
-        $this->vars     = [];
-        $this->passos   = [];
-        $this->numPasso = 0;
-        $this->saida    = '';
+        $this->global     = [];
+        $this->local      = [];
+        $this->emFuncao   = false;
+        $this->funcoes    = [];
+        $this->passos     = [];
+        $this->numPasso   = 0;
+        $this->saida      = '';
+        $this->returnFlag = false;
 
         // Pré-carrega inputs
-        foreach ($this->inputs as $k => $v) {
-            $this->vars[$k] = (int)$v;
+        foreach ($this->inputs as $k => $v) $this->global[$k] = $v;
+
+        // Registra funções
+        foreach ($ast['corpo'] as $stmt) {
+            if ($stmt['no'] === 'funcdef') $this->funcoes[$stmt['nome']] = $stmt['corpo'];
         }
 
         $this->executarBloco($ast['corpo']);
 
         return [
             'saida'     => $this->saida,
-            'variaveis' => $this->vars,
+            'variaveis' => $this->global,
             'passos'    => array_map(fn($p) => [
-                'numero'     => $p->numero,
-                'descricao'  => $p->descricao,
-                'instrucao'  => $p->instrucao,
-                'variaveis'  => $p->variaveis,
-                'saida'      => $p->saida,
-                'linha'      => $p->linha,
+                'numero'    => $p->numero,
+                'descricao' => $p->descricao,
+                'instrucao' => $p->instrucao,
+                'variaveis' => $p->variaveis,
+                'saida'     => $p->saida,
+                'linha'     => $p->linha,
             ], $this->passos),
         ];
     }
 
-    // ── Executa bloco de statements ──────────────────────────
-    private function executarBloco(array $stmts, int $profundidade = 0, int &$guard = 0): void {
+    private function executarBloco(array $stmts): void {
         foreach ($stmts as $stmt) {
-            $this->executarStmt($stmt, $profundidade, $guard);
+            if ($this->returnFlag) break;
+            $this->executarStmt($stmt);
         }
     }
 
-    // ── Executa um statement ──────────────────────────────────
-    private function executarStmt(array $no, int $prof = 0, int &$guard = 0): void {
+    private function executarStmt(array $no): void {
         $linha = $no['linha'] ?? 0;
 
         switch ($no['no']) {
 
-            // ── ATRIBUIÇÃO ─────────────────────────────────────
+            // ── Atribuição int ────────────────────────────────
             case 'atrib': {
-                $valor = $this->avaliarExpr($no['expr']);
                 $nome  = $no['var']->valor;
-                $anterior = $this->vars[$nome] ?? null;
-                $this->vars[$nome] = $valor;
-
-                $desc = $anterior === null
-                    ? "Declara variável '$nome' = $valor"
-                    : "Atualiza variável '$nome': $anterior → $valor";
-
-                $this->registrarPasso($desc, "$nome ? " . $this->exprStr($no['expr']), null, $linha);
+                $valor = $this->avaliarExpr($no['expr']);
+                // Mantém como int se não houver parte decimal
+                if (is_float($valor) && floor($valor) == $valor) $valor = (int)$valor;
+                $ant   = $this->lerVar($nome);
+                $this->escreverVar($nome, $valor);
+                $desc  = $ant === null ? "Declara '$nome' = $valor" : "Atualiza '$nome': $ant → $valor";
+                $this->passo($desc, "$nome ? ".$this->exprStr($no['expr']), null, $linha);
                 break;
             }
 
-            // ── INPUT ──────────────────────────────────────────
+            // ── Atribuição float ──────────────────────────────
+            case 'fatrib': {
+                $nome  = $no['var']->valor;
+                $valor = (float)$this->avaliarExpr($no['expr']);
+                $ant   = $this->lerVar($nome);
+                $this->escreverVar($nome, $valor);
+                $desc  = $ant === null ? "Declara float '$nome' = $valor" : "Atualiza '$nome': $ant → $valor";
+                $this->passo($desc, "$nome ? ".$this->exprStr($no['expr']), null, $linha);
+                break;
+            }
+
+            // ── Atribuição string ─────────────────────────────
+            case 'satrib': {
+                $nome  = $no['var']->valor;
+                $valor = $this->resolverTemplate($no['partes'], $linha);
+                $this->escreverVar($nome, $valor);
+                $this->passo("Declara string '$nome' = \"$valor\"", "$nome ? @@...@@", null, $linha);
+                break;
+            }
+
+            // ── Input ─────────────────────────────────────────
             case 'input': {
-                $nome = $no['var']->valor;
-                $valor = $this->vars[$nome] ?? 0; // já foi carregado do formulário
-                $this->registrarPasso(
-                    "INPUT: variável '$nome' recebe valor $valor (entrada do usuário)",
-                    "xec $nome",
-                    null,
-                    $linha
-                );
+                $t    = $no['var'];
+                $nome = $t->valor;
+                $val  = $this->lerVar($nome) ?? 0;
+                if ($t->tipo === 'FVAR') $val = (float)$val;
+                elseif ($t->tipo === 'VAR') $val = is_numeric($val) ? (int)$val : 0;
+                $this->escreverVar($nome, $val);
+                $this->passo("INPUT '$nome' = $val", "xec $nome", null, $linha);
                 break;
             }
 
-            // ── PRINT ──────────────────────────────────────────
+            // ── Print simples ─────────────────────────────────
             case 'print': {
                 $nome  = $no['var']->valor;
-                $valor = $this->vars[$nome] ?? null;
-                if ($valor === null) {
-                    throw new MiniRuntimeError("Variável '$nome' não definida", $linha);
-                }
+                $valor = $this->lerVar($nome);
+                if ($valor === null) throw new MiniRuntimeError("Variável '$nome' não definida", $linha);
                 $txt = "PRINT → $valor";
-                $this->saida .= $txt . "\n";
-                $this->registrarPasso("Imprime '$nome' = $valor", "zec $nome", $txt, $linha);
+                $this->saida .= $txt."\n";
+                $this->passo("Imprime '$nome' = $valor", "zec $nome", $txt, $linha);
                 break;
             }
 
-            // ── IF / ELSE ──────────────────────────────────────
+            // ── Print template ────────────────────────────────
+            case 'print_tmpl': {
+                $txt = $this->resolverTemplate($no['partes'], $linha);
+                $this->saida .= "PRINT → $txt\n";
+                $this->passo("Imprime: \"$txt\"", "zec ...", "PRINT → $txt", $linha);
+                break;
+            }
+
+            // ── IF ────────────────────────────────────────────
             case 'if': {
-                $resultado = $this->avaliarCond($no['cond']);
-                $condStr   = $this->condStr($no['cond']);
-                $branch    = $resultado ? 'VERDADEIRA → executa bloco then' : 'FALSA → executa bloco else';
-
-                $this->registrarPasso(
-                    "IF: condição [$condStr] é $branch",
-                    "ez $condStr",
-                    null,
-                    $linha
-                );
-
-                if ($resultado) {
-                    $this->executarBloco($no['entao'], $prof + 1, $guard);
-                } else {
-                    $this->executarBloco($no['senao'], $prof + 1, $guard);
-                }
+                $res     = $this->avaliarCond($no['cond']);
+                $condStr = $this->condStr($no['cond']);
+                $branch  = $res ? 'VERDADEIRA → then' : 'FALSA → else';
+                $this->passo("IF [$condStr] $branch", "cs $condStr", null, $linha);
+                $this->executarBloco($res ? $no['entao'] : $no['senao']);
                 break;
             }
 
             // ── WHILE ─────────────────────────────────────────
             case 'while': {
-                $iter    = 0;
                 $condStr = $this->condStr($no['cond']);
-
-                while (true) {
-                    $resultado = $this->avaliarCond($no['cond']);
-                    $branch    = $resultado ? 'VERDADEIRA → itera' : 'FALSA → sai do loop';
-
-                    $this->registrarPasso(
-                        "WHILE [$iter]: condição [$condStr] é $branch",
-                        "uz $condStr",
-                        null,
-                        $linha
-                    );
-
-                    if (!$resultado) break;
-
-                    $iter++;
-                    $guard++;
-                    if ($iter > $this->iterMax) {
-                        throw new MiniRuntimeError(
-                            "Loop infinito detectado (limite: {$this->iterMax} iterações)",
-                            $linha
-                        );
-                    }
-
-                    $this->executarBloco($no['corpo'], $prof + 1, $guard);
+                $iter    = 0;
+                while (!$this->returnFlag) {
+                    $res = $this->avaliarCond($no['cond']);
+                    $branch = $res ? 'VERDADEIRA → itera' : 'FALSA → sai';
+                    $this->passo("WHILE[$iter] [$condStr] $branch", "wh $condStr", null, $linha);
+                    if (!$res) break;
+                    if (++$iter > $this->iterMax)
+                        throw new MiniRuntimeError("Loop infinito detectado (limite {$this->iterMax})", $linha);
+                    $this->executarBloco($no['corpo']);
                 }
+                break;
+            }
+
+            // ── FOR ───────────────────────────────────────────
+            case 'for': {
+                $this->executarStmt($no['init']);
+                $condStr = $this->condStr($no['cond']);
+                $iter    = 0;
+                while (!$this->returnFlag) {
+                    $res = $this->avaliarCond($no['cond']);
+                    $branch = $res ? 'VERDADEIRA → itera' : 'FALSA → sai';
+                    $this->passo("FOR[$iter] [$condStr] $branch", "fr $condStr", null, $linha);
+                    if (!$res) break;
+                    if (++$iter > $this->iterMax)
+                        throw new MiniRuntimeError("Loop infinito no for (limite {$this->iterMax})", $linha);
+                    $this->executarBloco($no['corpo']);
+                    $this->executarStmt($no['step']);
+                }
+                break;
+            }
+
+            // ── Declaração de função (só registra) ───────────
+            case 'funcdef': {
+                $this->passo("Função '{$no['nome']}' registrada", "fn {$no['nome']}() {}", null, $linha);
+                break;
+            }
+
+            // ── Chamada de função ─────────────────────────────
+            case 'funccall': {
+                $nome = $no['nome'];
+                if (!isset($this->funcoes[$nome]))
+                    throw new MiniRuntimeError("Função '$nome' não definida", $linha);
+                $this->passo("Chama '$nome'", "$nome", null, $linha);
+
+                // Salva contexto e entra no escopo local
+                $localAnt    = $this->local;
+                $emFuncaoAnt = $this->emFuncao;
+                $this->local    = [];
+                $this->emFuncao = true;
+                $this->returnFlag = false;
+
+                $this->executarBloco($this->funcoes[$nome]);
+
+                // Restaura contexto
+                $this->returnFlag = false;
+                $this->local      = $localAnt;
+                $this->emFuncao   = $emFuncaoAnt;
+                break;
+            }
+
+            // ── Return ────────────────────────────────────────
+            case 'return': {
+                $val = $no['expr'] ? $this->avaliarExpr($no['expr']) : null;
+                $this->returnFlag = true;
+                $this->passo("Return ".($val ?? ''), "ret", null, $linha);
                 break;
             }
         }
     }
 
-    // ── Avalia expressão aritmética → int ─────────────────────
-    private function avaliarExpr(array $no): int {
-        switch ($no['no']) {
-            case 'num':
-                return $no['valor'];
-
-            case 'var':
-                $nome = $no['nome'];
-                if (!isset($this->vars[$nome])) {
-                    throw new MiniRuntimeError("Variável '$nome' não definida", $no['linha'] ?? 0);
-                }
-                return $this->vars[$nome];
-
-            case 'binop':
-                $esq = $this->avaliarExpr($no['esq']);
-                $dir = $this->avaliarExpr($no['dir']);
-                return match($no['op']) {
-                    '+'  => $esq + $dir,
-                    '-'  => $esq - $dir,
-                    '*'  => $esq * $dir,
-                    '/'  => $dir != 0 ? intdiv($esq, $dir) : throw new MiniRuntimeError("Divisão por zero", $no['linha'] ?? 0),
-                    default => 0,
-                };
-        }
-        return 0;
+    // ── Escopo ────────────────────────────────────────────────
+    private function lerVar(string $nome): mixed {
+        if ($this->emFuncao && array_key_exists($nome, $this->local)) return $this->local[$nome];
+        return $this->global[$nome] ?? null;
     }
 
-    // ── Avalia condição → bool ────────────────────────────────
-    private function avaliarCond(array $no): bool {
-        switch ($no['no']) {
-            case 'cmp':
-                $esq = $this->avaliarExpr($no['esq']);
-                $dir = $this->avaliarExpr($no['dir']);
-                return match($no['op']) {
-                    '==' => $esq == $dir,
-                    '!=' => $esq != $dir,
-                    '<'  => $esq  < $dir,
-                    '>'  => $esq  > $dir,
-                    '<=' => $esq <= $dir,
-                    '>=' => $esq >= $dir,
-                    default => false,
-                };
+    private function escreverVar(string $nome, mixed $valor): void {
+        if ($this->emFuncao) {
+            // Se a variável já existe no global, atualiza o global (comportamento PHP-like)
+            // Se não existe no global mas existe no local, atualiza local
+            // Se não existe em nenhum, cria local
+            if (array_key_exists($nome, $this->global)) {
+                $this->global[$nome] = $valor;
+            } else {
+                $this->local[$nome] = $valor;
+            }
+        } else {
+            $this->global[$nome] = $valor;
+        }
+    }
 
-            case 'log':
-                $esq = $this->avaliarCond($no['esq']);
-                $dir = $this->avaliarCond($no['dir']);
-                return match($no['op']) {
-                    '&&' => $esq && $dir,
-                    '||' => $esq || $dir,
-                    default => false,
-                };
+    // ── Template ──────────────────────────────────────────────
+    private function resolverTemplate(array $partes, int $linha): string {
+        $r = '';
+        foreach ($partes as $p) {
+            if ($p['no'] === 'strlit') { $r .= $p['valor']; continue; }
+            $v = $this->lerVar($p['nome']);
+            if ($v === null) throw new MiniRuntimeError("Variável '{$p['nome']}' não definida no template", $linha);
+            $r .= $v;
+        }
+        return $r;
+    }
+
+    // ── Avalia expressão ──────────────────────────────────────
+    private function avaliarExpr(array $no): int|float {
+        return match($no['no']) {
+            'num'   => $no['valor'],
+            'fnum'  => $no['valor'],
+            'var'   => $this->getNumVar($no['nome'], $no['linha']),
+            'fvar'  => (float)$this->getNumVar($no['nome'], $no['linha']),
+            'binop' => $this->avaliarBinop($no),
+            default => 0,
+        };
+    }
+
+    private function getNumVar(string $nome, int $linha): int|float {
+        $v = $this->lerVar($nome);
+        if ($v === null) throw new MiniRuntimeError("Variável '$nome' não definida", $linha);
+        return $v;
+    }
+
+    private function avaliarBinop(array $no): int|float {
+        $e = $this->avaliarExpr($no['esq']);
+        $d = $this->avaliarExpr($no['dir']);
+        return match($no['op']) {
+            '+' => $e + $d,
+            '-' => $e - $d,
+            '*' => $e * $d,
+            '/' => $d != 0 ? $e / $d : throw new MiniRuntimeError("Divisão por zero", $no['linha'] ?? 0),
+            default => 0,
+        };
+    }
+
+    // ── Condição ──────────────────────────────────────────────
+    private function avaliarCond(array $no): bool {
+        if ($no['no'] === 'cmp') {
+            $e = $this->avaliarExpr($no['esq']);
+            $d = $this->avaliarExpr($no['dir']);
+            return match($no['op']) {
+                '=='=>$e==$d,'!='=>$e!=$d,'<'=>$e<$d,'>'=>$e>$d,'<='=>$e<=$d,'>='=>$e>=$d,
+                default=>false,
+            };
+        }
+        if ($no['no'] === 'log') {
+            return match($no['op']) {
+                '&&' => $this->avaliarCond($no['esq']) && $this->avaliarCond($no['dir']),
+                '||' => $this->avaliarCond($no['esq']) || $this->avaliarCond($no['dir']),
+                default => false,
+            };
         }
         return false;
     }
 
-    // ── Registra passo ────────────────────────────────────────
-    private function registrarPasso(string $desc, string $instrucao, ?string $saida, int $linha): void {
+    // ── Passo ─────────────────────────────────────────────────
+    private function passo(string $desc, string $instrucao, ?string $saida, int $linha): void {
         $this->numPasso++;
-        $this->passos[] = new Passo(
-            $this->numPasso,
-            $desc,
-            $instrucao,
-            $this->vars,  // snapshot atual
-            $saida,
-            $linha
-        );
+        $snap = array_merge($this->global, $this->local);
+        $this->passos[] = new Passo($this->numPasso, $desc, $instrucao, $snap, $saida, $linha);
     }
 
-    // ── Representação textual de expressão ────────────────────
+    // ── Repr. textual ─────────────────────────────────────────
     private function exprStr(array $no): string {
         return match($no['no']) {
-            'num'   => (string)$no['valor'],
-            'var'   => $no['nome'],
-            'binop' => $this->exprStr($no['esq']) . ' ' . $no['op'] . ' ' . $this->exprStr($no['dir']),
-            default => '?',
+            'num','fnum'         => (string)$no['valor'],
+            'var','fvar','svar'  => $no['nome'],
+            'binop'              => $this->exprStr($no['esq']).' '.$no['op'].' '.$this->exprStr($no['dir']),
+            default              => '?',
         };
     }
 
-    // ── Representação textual de condição ─────────────────────
     private function condStr(array $no): string {
         return match($no['no']) {
-            'cmp' => $this->exprStr($no['esq']) . ' ' . $no['op'] . ' ' . $this->exprStr($no['dir']),
-            'log' => $this->condStr($no['esq']) . ' ' . $no['op'] . ' ' . $this->condStr($no['dir']),
+            'cmp'   => $this->exprStr($no['esq']).' '.$no['op'].' '.$this->exprStr($no['dir']),
+            'log'   => $this->condStr($no['esq']).' '.$no['op'].' '.$this->condStr($no['dir']),
             default => '?',
         };
     }
