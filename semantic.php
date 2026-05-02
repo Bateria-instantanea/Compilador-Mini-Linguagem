@@ -1,18 +1,12 @@
 <?php
 // ============================================================
-// SEMANTIC.PHP — Análise Semântica
-// Percorre a AST e verifica:
-//   1. Variáveis usadas antes de declarar
-//   2. Divisão por zero literal
-//   3. Variáveis não utilizadas (aviso, não erro)
-//   4. Condições sempre verdadeiras/falsas com literais
+// SEMANTIC.PHP — Van Language v2.0
+// Verificações: tipos, escopo local/global, vars não declaradas
+// divisão por zero, variáveis não utilizadas, funções
 // ============================================================
 
 require_once __DIR__ . '/parser.php';
 
-// ============================================================
-// SemanticError — erro semântico com linha
-// ============================================================
 class MiniSemanticError extends Exception {
     public int $linhaCodigo;
     public function __construct(string $msg, int $linha = 0) {
@@ -22,137 +16,152 @@ class MiniSemanticError extends Exception {
 }
 
 // ============================================================
-// Tabela de Símbolos
+// Tabela de Símbolos com escopo
 // ============================================================
 class TabelaDeSimbolos {
-    private array $declaradas  = []; // variáveis declaradas (atrib / input)
-    private array $utilizadas  = []; // variáveis lidas
-    private array $valores     = []; // valor literal se conhecido
 
-    public function declarar(string $nome, int $linha, $valor = null): void {
-        $this->declaradas[$nome] = $linha;
-        if ($valor !== null) {
-            $this->valores[$nome] = $valor;
-        } else {
-            unset($this->valores[$nome]); // valor desconhecido (input)
+    private array $global    = []; // nome => [linha, tipo, valor]
+    private array $local     = [];
+    private bool  $emFuncao  = false;
+    private array $utilizadas = [];
+
+    public function entrarFuncao(): void { $this->emFuncao = true; $this->local = []; }
+    public function sairFuncao(): void   { $this->emFuncao = false; $this->local = []; }
+
+    public function declarar(string $nome, string $tipo, int $linha, mixed $valor = null): void {
+        $entrada = ['linha'=>$linha,'tipo'=>$tipo,'valor'=>$valor];
+        if ($this->emFuncao) $this->local[$nome]  = $entrada;
+        else                 $this->global[$nome] = $entrada;
+    }
+
+    public function usar(string $nome, int $linha): string {
+        // Procura local primeiro, depois global
+        if ($this->emFuncao && isset($this->local[$nome])) {
+            $this->utilizadas[$nome] = $linha;
+            return $this->local[$nome]['tipo'];
         }
-    }
-
-    public function usar(string $nome, int $linha): void {
-        if (!isset($this->declaradas[$nome])) {
-            throw new MiniSemanticError(
-                "Variável '$nome' usada antes de ser declarada", $linha
-            );
+        if (isset($this->global[$nome])) {
+            $this->utilizadas[$nome] = $linha;
+            return $this->global[$nome]['tipo'];
         }
-        $this->utilizadas[$nome] = $linha;
+        throw new MiniSemanticError("Variável '$nome' usada antes de ser declarada", $linha);
     }
 
-    public function getValorConhecido(string $nome): ?int {
-        return $this->valores[$nome] ?? null;
+    public function getValor(string $nome): mixed {
+        if ($this->emFuncao && isset($this->local[$nome])) return $this->local[$nome]['valor'];
+        return $this->global[$nome]['valor'] ?? null;
     }
 
-    public function isDeclared(string $nome): bool {
-        return isset($this->declaradas[$nome]);
+    public function getTipo(string $nome): ?string {
+        if ($this->emFuncao && isset($this->local[$nome])) return $this->local[$nome]['tipo'];
+        return $this->global[$nome]['tipo'] ?? null;
     }
 
-    // Retorna variáveis declaradas mas nunca lidas (avisos)
     public function getNaoUtilizadas(): array {
-        $naoUsadas = [];
-        foreach ($this->declaradas as $nome => $linha) {
-            if (!isset($this->utilizadas[$nome])) {
-                $naoUsadas[] = ['nome' => $nome, 'linha' => $linha];
-            }
+        $res = [];
+        foreach ($this->global as $nome => $info) {
+            if (!isset($this->utilizadas[$nome]))
+                $res[] = ['nome'=>$nome,'linha'=>$info['linha']];
         }
-        return $naoUsadas;
+        return $res;
     }
 
     public function toArray(): array {
         $tabela = [];
-        foreach ($this->declaradas as $nome => $linha) {
-            $tabela[] = [
-                'nome'      => $nome,
-                'linha_decl'=> $linha,
-                'linha_uso' => $this->utilizadas[$nome] ?? null,
-                'valor'     => $this->valores[$nome] ?? '?',
-                'usada'     => isset($this->utilizadas[$nome]),
-            ];
+        foreach ($this->global as $n => $i) {
+            $tabela[] = ['nome'=>$n,'escopo'=>'global','tipo'=>$i['tipo'],
+                'linha_decl'=>$i['linha'],'linha_uso'=>$this->utilizadas[$n]??null,
+                'valor'=>$i['valor']??'?','usada'=>isset($this->utilizadas[$n])];
+        }
+        foreach ($this->local as $n => $i) {
+            $tabela[] = ['nome'=>$n,'escopo'=>'local','tipo'=>$i['tipo'],
+                'linha_decl'=>$i['linha'],'linha_uso'=>$this->utilizadas[$n]??null,
+                'valor'=>$i['valor']??'?','usada'=>isset($this->utilizadas[$n])];
         }
         return $tabela;
     }
 }
 
 // ============================================================
-// Analisador Semântico
-// ============================================================
 class AnalisadorSemantico {
 
     private TabelaDeSimbolos $tabela;
     private array $erros   = [];
     private array $avisos  = [];
+    private array $funcoes = [];
 
-    public function __construct() {
-        $this->tabela = new TabelaDeSimbolos();
-    }
+    public function __construct() { $this->tabela = new TabelaDeSimbolos(); }
 
-    // ── Ponto de entrada ─────────────────────────────────────
     public function analisar(array $ast): array {
-        $this->erros  = [];
-        $this->avisos = [];
-        $this->tabela = new TabelaDeSimbolos();
+        $this->erros   = [];
+        $this->avisos  = [];
+        $this->tabela  = new TabelaDeSimbolos();
+        $this->funcoes = [];
 
+        // 1ª passagem: registra todas as funções declaradas
+        foreach ($ast['corpo'] as $stmt) {
+            if ($stmt['no'] === 'funcdef') {
+                if (isset($this->funcoes[$stmt['nome']]))
+                    $this->erros[] = ['msg'=>"Função '{$stmt['nome']}' declarada duas vezes",'linha'=>$stmt['linha']];
+                $this->funcoes[$stmt['nome']] = $stmt;
+            }
+        }
+
+        // 2ª passagem: analisa tudo
         $this->visitarBloco($ast['corpo']);
 
-        // Avisos de variáveis não utilizadas
         foreach ($this->tabela->getNaoUtilizadas() as $nu) {
-            $this->avisos[] = [
-                'msg'   => "Variável '{$nu['nome']}' declarada mas nunca utilizada",
-                'linha' => $nu['linha'],
-            ];
+            $this->avisos[] = ['msg'=>"Variável '{$nu['nome']}' declarada mas nunca utilizada",'linha'=>$nu['linha']];
         }
 
         return [
             'erros'   => $this->erros,
             'avisos'  => $this->avisos,
             'tabela'  => $this->tabela->toArray(),
+            'funcoes' => array_keys($this->funcoes),
             'valido'  => empty($this->erros),
         ];
     }
 
-    // ── Percorre bloco de statements ─────────────────────────
     private function visitarBloco(array $stmts): void {
-        foreach ($stmts as $stmt) {
-            $this->visitarStmt($stmt);
-        }
+        foreach ($stmts as $s) $this->visitarStmt($s);
     }
 
-    // ── Despacha por tipo de nó ───────────────────────────────
     private function visitarStmt(array $no): void {
         switch ($no['no']) {
 
             case 'atrib':
-                // Avalia lado direito primeiro (verifica uso de vars)
-                $valor = $this->avaliarExpr($no['expr']);
-                // Depois declara a variável
-                $this->tabela->declarar($no['var']->valor, $no['linha'], $valor);
+                $v = $this->avaliarExpr($no['expr']);
+                $this->tabela->declarar($no['var']->valor, 'int', $no['linha'], $v);
+                break;
+
+            case 'fatrib':
+                $v = $this->avaliarExpr($no['expr']);
+                $this->tabela->declarar($no['var']->valor, 'float', $no['linha'], $v);
+                break;
+
+            case 'satrib':
+                $this->verificarTemplate($no['partes'], $no['linha']);
+                $this->tabela->declarar($no['var']->valor, 'string', $no['linha'], null);
                 break;
 
             case 'input':
-                // INPUT declara variável com valor desconhecido
-                $this->tabela->declarar($no['var']->valor, $no['linha'], null);
+                $t    = $no['var'];
+                $tipo = match($t->tipo) { 'FVAR'=>'float','SVAR'=>'string',default=>'int' };
+                $this->tabela->declarar($t->valor, $tipo, $no['linha'], null);
                 break;
 
             case 'print':
-                try {
-                    $this->tabela->usar($no['var']->valor, $no['linha']);
-                } catch (MiniSemanticError $e) {
-                    $this->erros[] = ['msg' => $e->getMessage(), 'linha' => $e->linhaCodigo];
-                }
+                try { $this->tabela->usar($no['var']->valor, $no['linha']); }
+                catch (MiniSemanticError $e) { $this->erros[] = ['msg'=>$e->getMessage(),'linha'=>$e->linhaCodigo]; }
+                break;
+
+            case 'print_tmpl':
+                $this->verificarTemplate($no['partes'], $no['linha']);
                 break;
 
             case 'if':
                 $this->verificarCond($no['cond']);
-                // Analisa ambos os blocos (mesmo sem saber qual será executado)
-                $snapDecl = $this->tabela->toArray(); // snapshot para avisos
                 $this->visitarBloco($no['entao']);
                 $this->visitarBloco($no['senao']);
                 break;
@@ -161,86 +170,105 @@ class AnalisadorSemantico {
                 $this->verificarCond($no['cond']);
                 $this->visitarBloco($no['corpo']);
                 break;
+
+            case 'for':
+                $this->visitarStmt($no['init']);
+                $this->verificarCond($no['cond']);
+                $this->visitarStmt($no['step']);
+                $this->visitarBloco($no['corpo']);
+                break;
+
+            case 'funcdef':
+                $this->tabela->entrarFuncao();
+                $this->visitarBloco($no['corpo']);
+                $this->tabela->sairFuncao();
+                break;
+
+            case 'funccall':
+                if (!isset($this->funcoes[$no['nome']]))
+                    $this->erros[] = ['msg'=>"Função '{$no['nome']}' chamada mas não declarada",'linha'=>$no['linha']];
+                break;
+
+            case 'return':
+                if ($no['expr']) $this->avaliarExpr($no['expr']);
+                break;
         }
     }
 
-    // ── Avalia expressão e retorna valor literal se possível ─
-    private function avaliarExpr(array $no): ?int {
-        switch ($no['no']) {
-            case 'num':
-                return $no['valor'];
+    private function verificarTemplate(array $partes, int $linha): void {
+        foreach ($partes as $p) {
+            if ($p['no'] === 'strlit') continue;
+            try { $this->tabela->usar($p['nome'], $linha); }
+            catch (MiniSemanticError $e) { $this->erros[] = ['msg'=>$e->getMessage(),'linha'=>$e->linhaCodigo]; }
+        }
+    }
 
-            case 'var':
-                try {
-                    $this->tabela->usar($no['nome'], $no['linha']);
-                    return $this->tabela->getValorConhecido($no['nome']);
-                } catch (MiniSemanticError $e) {
-                    $this->erros[] = ['msg' => $e->getMessage(), 'linha' => $e->linhaCodigo];
-                    return null;
-                }
+    private function avaliarExpr(array $no): mixed {
+        return match($no['no']) {
+            'num'   => $no['valor'],
+            'fnum'  => $no['valor'],
+            'var','fvar' => $this->usarVar($no['nome'], $no['linha']),
+            'binop' => $this->avaliarBinop($no),
+            default => null,
+        };
+    }
 
-            case 'binop':
-                $esq = $this->avaliarExpr($no['esq']);
-                $dir = $this->avaliarExpr($no['dir']);
+    private function usarVar(string $nome, int $linha): mixed {
+        try {
+            $this->tabela->usar($nome, $linha);
+            return $this->tabela->getValor($nome);
+        } catch (MiniSemanticError $e) {
+            $this->erros[] = ['msg'=>$e->getMessage(),'linha'=>$e->linhaCodigo];
+            return null;
+        }
+    }
 
-                // Verifica divisão por zero literal
-                if ($no['op'] === '/' && $dir === 0) {
-                    $this->erros[] = [
-                        'msg'   => "Divisão por zero detectada",
-                        'linha' => $no['linha'],
-                    ];
-                    return null;
-                }
-
-                if ($esq !== null && $dir !== null) {
-                    return match($no['op']) {
-                        '+'  => $esq + $dir,
-                        '-'  => $esq - $dir,
-                        '*'  => $esq * $dir,
-                        '/'  => ($dir != 0) ? intdiv($esq, $dir) : null,
-                        default => null,
-                    };
-                }
-                return null;
+    private function avaliarBinop(array $no): mixed {
+        $e = $this->avaliarExpr($no['esq']);
+        $d = $this->avaliarExpr($no['dir']);
+        if ($no['op'] === '/' && $d === 0) {
+            $this->erros[] = ['msg'=>'Divisão por zero detectada','linha'=>$no['linha']];
+            return null;
+        }
+        if ($e !== null && $d !== null) {
+            return match($no['op']) {
+                '+'=>$e+$d, '-'=>$e-$d, '*'=>$e*$d,
+                '/'=>$d!=0?$e/$d:null,
+                default=>null,
+            };
         }
         return null;
     }
 
-    // ── Verifica condição (variáveis declaradas + aviso literal) ─
     private function verificarCond(array $no): void {
-        switch ($no['no']) {
-            case 'cmp':
-                $esq = $this->avaliarExpr($no['esq']);
-                $dir = $this->avaliarExpr($no['dir']);
-
-                // Aviso: condição sempre verdadeira ou sempre falsa
-                if ($esq !== null && $dir !== null) {
-                    $resultado = match($no['op']) {
-                        '==' => $esq == $dir,
-                        '!=' => $esq != $dir,
-                        '<'  => $esq  < $dir,
-                        '>'  => $esq  > $dir,
-                        '<=' => $esq <= $dir,
-                        '>=' => $esq >= $dir,
-                        default => null,
-                    };
-                    if ($resultado !== null) {
-                        $txt = $resultado ? 'sempre verdadeira' : 'sempre falsa';
-                        $this->avisos[] = [
-                            'msg'   => "Condição com literais é $txt ($esq {$no['op']} $dir)",
-                            'linha' => $no['linha'] ?? 0,
-                        ];
-                    }
+        if ($no['no'] === 'cmp') {
+            // Só gera aviso se AMBOS os lados forem literais numéricos (não variáveis)
+            // Variáveis mudam dentro do bloco, então não é possível saber se é sempre V/F
+            $esqEhLiteral = in_array($no['esq']['no'], ['num','fnum']);
+            $dirEhLiteral = in_array($no['dir']['no'], ['num','fnum']);
+            if (!$esqEhLiteral || !$dirEhLiteral) {
+                // Pelo menos um lado é variável — apenas verifica declaração
+                $this->avaliarExpr($no['esq']);
+                $this->avaliarExpr($no['dir']);
+                return;
+            }
+            $e = $this->avaliarExpr($no['esq']);
+            $d = $this->avaliarExpr($no['dir']);
+            if ($e !== null && $d !== null) {
+                $res = match($no['op']) {
+                    '=='=>$e==$d,'!='=>$e!=$d,'<'=>$e<$d,'>'=>$e>$d,'<='=>$e<=$d,'>='=>$e>=$d,
+                    default=>null,
+                };
+                if ($res !== null) {
+                    $txt = $res ? 'sempre verdadeira' : 'sempre falsa';
+                    $this->avisos[] = ['msg'=>"Condição com literais é $txt ($e {$no['op']} $d)",'linha'=>$no['linha']??0];
                 }
-                break;
-
-            case 'log':
-                $this->verificarCond($no['esq']);
-                $this->verificarCond($no['dir']);
-                break;
+            }
+        } elseif ($no['no'] === 'log') {
+            $this->verificarCond($no['esq']);
+            $this->verificarCond($no['dir']);
         }
     }
 
-    // ── Getters ───────────────────────────────────────────────
     public function getTabela(): TabelaDeSimbolos { return $this->tabela; }
 }
