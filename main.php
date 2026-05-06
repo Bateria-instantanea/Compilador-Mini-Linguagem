@@ -102,12 +102,82 @@ function astHtml(array $no, int $d=0): string {
 <title>Van Language</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Space+Grotesk:wght@400;600;700;800&display=swap');
+/* ── TEMA ESCURO (padrão) ── */
 :root{
   --bg:#080a0f;--surface:#0f1219;--card:#131720;--border:#1e2436;--border2:#2a3352;
   --cyan:#00e5ff;--purple:#7c5cfc;--green:#00ff9d;--orange:#ff9f43;--red:#ff4757;
   --yellow:#ffd32a;--teal:#00bcd4;--text:#c8d3f0;--muted:#4a5572;
   --mono:'JetBrains Mono',monospace;--sans:'Space Grotesk',sans-serif;
 }
+/* ── TEMA CLARO ── */
+[data-tema="light"]{
+  --bg:#f0f2f8;--surface:#ffffff;--card:#f7f8fc;--border:#dde1ee;--border2:#c5cce0;
+  --cyan:#0077cc;--purple:#6b3fa0;--green:#1a7a4a;--orange:#c45c00;--red:#cc2200;
+  --yellow:#996600;--teal:#006b8f;--text:#1a1f36;--muted:#7a84a0;
+}
+[data-tema="light"] textarea#codigo{color:#0077cc;background:#f7f8fc;}
+[data-tema="light"] textarea#codigo:focus{box-shadow:0 0 0 3px rgba(0,119,204,.08);}
+[data-tema="light"] .terminal{background:#f7f8fc;color:#1a7a4a;border-color:var(--border);}
+[data-tema="light"] .logo{color:#ffffff;}
+[data-tema="light"] tr:hover td{background:rgba(0,0,0,.02);}
+[data-tema="light"] .aw{background:#f7f8fc;}
+/* ── TEMA BLUE ── */
+[data-tema="blue"]{
+  --bg:#020818;--surface:#040e28;--card:#061230;--border:#0d2050;--border2:#1a3a7a;
+  --cyan:#4db8ff;--purple:#a78bfa;--green:#34d399;--orange:#fbbf24;--red:#f87171;
+  --yellow:#fde68a;--teal:#67e8f9;--text:#bfdbfe;--muted:#3b5a8a;
+}
+[data-tema="blue"] textarea#codigo{color:#4db8ff;background:#020c20;}
+[data-tema="blue"] textarea#codigo:focus{box-shadow:0 0 0 3px rgba(77,184,255,.08);}
+[data-tema="blue"] .terminal{background:#010610;color:#34d399;}
+[data-tema="blue"] .logo{background:linear-gradient(135deg,#4db8ff,#a78bfa);}
+[data-tema="blue"] tr:hover td{background:rgba(77,184,255,.04);}
+/* ── TEMA SANGUE ── */
+[data-tema="blood"]{
+  --bg:#2a000b;--surface:#120005;--card:#190007;--border:#4d0012;--border2:#6a001a;
+  --cyan:#ff5252;--purple:#d32f2f;--green:#ff8585;--orange:#ff7e33;--red:#ff1744;
+  --yellow:#ffd740;--teal:#ff5252;--text:#ffebee;--muted:#b71c1c;
+}
+[data-tema="blood"] textarea#codigo{color:#ff5252;background:#0f0003;}
+[data-tema="blood"] textarea#codigo:focus{box-shadow:0 0 0 3px rgba(255,82,82,.15);}
+[data-tema="blood"] .terminal{background:#0a0002;color:#ff8585;}
+[data-tema="blood"] .logo{background:linear-gradient(135deg,#d50000,#ff1744);}
+[data-tema="blood"] .dot{background:#ff1744;box-shadow:0 0 8px #ff1744;}
+[data-tema="blood"] tr:hover td{background:rgba(255,23,68,.05);}
+[data-tema="blood"] .ps.done{color:#ff5252;border-color:rgba(255,82,82,.3);background:rgba(255,82,82,.08);}
+[data-tema="blood"] .tab-btn.active{color:#ff1744;border-bottom-color:#ff1744;}
+[data-tema="blood"] .tab-btn.active .cnt{background:rgba(255,23,68,.15);color:#ff1744;}
+
+/* ── TEMA VERDE ESCURO ── */
+[data-tema="forest"]{
+  --bg:#04140b;--surface:#04140b;--card:#0a1c10;--border:#14301d;--border2:#1d4629;
+  --cyan:#00e676;--purple:#00b0ff;--green:#69f0ae;--orange:#ffd54f;--red:#ff5252;
+  --yellow:#c6ff00;--teal:#00bfa5;--text:#e8f8ec;--muted:#388e3c;
+}
+[data-tema="forest"] textarea#codigo{color:#00e676;background:#020a06;}
+[data-tema="forest"] textarea#codigo:focus{box-shadow:0 0 0 3px rgba(0,230,118,.15);}
+[data-tema="forest"] .terminal{background:#010703;color:#69f0ae;}
+[data-tema="forest"] .logo{background:linear-gradient(135deg,#00b0ff,#00e676);}
+[data-tema="forest"] .dot{background:#00e676;box-shadow:0 0 8px #00e676;}
+[data-tema="forest"] tr:hover td{background:rgba(0,230,118,.05);}
+[data-tema="forest"] .ps.done{color:#69f0ae;border-color:rgba(105,240,174,.3);background:rgba(105,240,174,.08);}
+[data-tema="forest"] .tab-btn.active{color:#00e676;border-bottom-color:#00e676;}
+[data-tema="forest"] .tab-btn.active .cnt{background:rgba(0,230,118,.15);color:#00e676;}
+/* ── Botões de tema ── */
+.theme-btns{display:flex;gap:6px;align-items:center;}
+.theme-btn{
+  width:26px;height:26px;border-radius:50%;border:2px solid transparent;
+  cursor:pointer;transition:transform .15s,border-color .15s;
+  position:relative;overflow:hidden;
+}
+.theme-btn:hover{transform:scale(1.15);}
+.theme-btn.ativo{border-color:var(--cyan);box-shadow:0 0 0 2px rgba(0,229,255,.3);}
+.theme-btn.t-dark{background:linear-gradient(135deg,#080a0f,#7c5cfc);}
+.theme-btn.t-light{background:linear-gradient(135deg,#f0f2f8,#0077cc);}
+.theme-btn.t-blue{background:linear-gradient(135deg,#020818,#4db8ff);}
+.theme-btn.t-blood{background:linear-gradient(135deg,#3d0010,#ff6b6b);}
+.theme-btn.t-forest{background:linear-gradient(135deg,#e8f5ee,#2ecc71);}
+.theme-sep{width:1px;height:20px;background:var(--border);margin:0 4px;}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;overflow-x:hidden;}
 /* TOPBAR */
@@ -268,6 +338,14 @@ td.ti{color:var(--cyan);}td.tf{color:var(--teal);}td.ts{color:var(--orange);}
         echo "<div class='$cls'>$label</div>";
     }
     ?>
+  </div>
+  <div class="theme-btns">
+    <div class="theme-sep"></div>
+    <button class="theme-btn t-dark ativo"  onclick="setTema('dark',this)"  title="Escuro"></button>
+    <button class="theme-btn t-light"        onclick="setTema('light',this)" title="Claro"></button>
+    <button class="theme-btn t-blue"         onclick="setTema('blue',this)"   title="Blue"></button>
+    <button class="theme-btn t-blood"        onclick="setTema('blood',this)"  title="Sangue"></button>
+    <button class="theme-btn t-forest"       onclick="setTema('forest',this)" title="Floresta"></button>
   </div>
 </div>
 
@@ -538,6 +616,25 @@ function aba(id,btn){
   document.getElementById('tab-'+id).classList.add('active');
   btn.classList.add('active');
 }
+function setTema(tema, btn){
+  document.documentElement.setAttribute('data-tema', tema === 'dark' ? '' : tema);
+  document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('ativo'));
+  btn.classList.add('ativo');
+  localStorage.setItem('van-tema', tema);
+}
+// Carrega tema salvo
+(function(){
+  const t = localStorage.getItem('van-tema') || 'dark';
+  if(t !== 'dark') document.documentElement.setAttribute('data-tema', t);
+  const btns = {'dark':0,'light':1,'blue':2,'blood':3,'forest':4};
+  const idx = btns[t] ?? 0;
+  document.addEventListener('DOMContentLoaded', function(){
+    document.querySelectorAll('.theme-btn')[idx]?.classList.add('ativo');
+    document.querySelectorAll('.theme-btn').forEach((b,i)=>{
+      if(i !== idx) b.classList.remove('ativo');
+    });
+  });
+})();
 function toggleRef(){
   const b=document.getElementById('rb'),a=document.getElementById('ra');
   const o=b.classList.toggle('open');
