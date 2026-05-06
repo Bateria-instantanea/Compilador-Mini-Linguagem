@@ -357,45 +357,67 @@ class Parser {
         return $no;
     }
 
-    // ── Expressão ─────────────────────────────────────────────
+    // ══════════════════════════════════════════════════════
+    // PARSER DE EXPRESSÃO COM PRECEDÊNCIA
+    // Precedência: * / maior que + -
+    // Suporta: na + nb * nc - |2|  (comprimento ilimitado)
+    // ══════════════════════════════════════════════════════
+
+    // Ponto de entrada: consome tokens e retorna nó AST
     private function parseExpr(array $tokens, int $linha): array {
-        [$no,] = $this->parseExprPos($tokens, 0, $linha);
+        $pos = 0;
+        [$no, $pos] = $this->parseExprAdd($tokens, $pos, $linha);
         return $no;
     }
 
+    // Usado pelo parseCond — retorna [nó, novaPos]
     private function parseExprPos(array $tokens, int $pos, int $linha): array {
+        return $this->parseExprAdd($tokens, $pos, $linha);
+    }
+
+    // Nível 1 (baixa precedência): + e -
+    private function parseExprAdd(array $tokens, int $pos, int $linha): array {
+        [$esq, $pos] = $this->parseExprMul($tokens, $pos, $linha);
+
+        while ($pos < count($tokens) && $tokens[$pos]->tipo === 'OP'
+               && in_array($tokens[$pos]->valor, ['+', '-'])) {
+            $op  = $this->opMap[$tokens[$pos]->valor];
+            $pos++;
+            [$dir, $pos] = $this->parseExprMul($tokens, $pos, $linha);
+            $esq = ['no'=>'binop','op'=>$op,'esq'=>$esq,'dir'=>$dir,'linha'=>$linha];
+        }
+        return [$esq, $pos];
+    }
+
+    // Nível 2 (alta precedência): * e /
+    private function parseExprMul(array $tokens, int $pos, int $linha): array {
+        [$esq, $pos] = $this->parseExprAtom($tokens, $pos, $linha);
+
+        while ($pos < count($tokens) && $tokens[$pos]->tipo === 'OP'
+               && in_array($tokens[$pos]->valor, ['*', '/'])) {
+            $op  = $this->opMap[$tokens[$pos]->valor];
+            $pos++;
+            [$dir, $pos] = $this->parseExprAtom($tokens, $pos, $linha);
+            $esq = ['no'=>'binop','op'=>$op,'esq'=>$esq,'dir'=>$dir,'linha'=>$linha];
+        }
+        return [$esq, $pos];
+    }
+
+    // Nível 3 (operando): variável ou literal
+    private function parseExprAtom(array $tokens, int $pos, int $linha): array {
         if ($pos >= count($tokens))
             throw new MiniParseError("Expressão incompleta", $linha);
         $t = $tokens[$pos];
 
-        $esq = match($t->tipo) {
+        $no = match($t->tipo) {
             'VAR'        => ['no'=>'var', 'nome'=>$t->valor,'linha'=>$t->linha],
             'FVAR'       => ['no'=>'fvar','nome'=>$t->valor,'linha'=>$t->linha],
             'NUM'        => ['no'=>'num', 'valor'=>Lexer::converterNumero($t->valor),'linha'=>$t->linha],
             'INUM'       => ['no'=>'num', 'valor'=>(int)$t->valor,'linha'=>$t->linha],
             'FNUM'       => ['no'=>'fnum','valor'=>(float)$t->valor,'linha'=>$t->linha],
             'FNUM_ALPHA' => ['no'=>'fnum','valor'=>Lexer::converterFloat($t->valor),'linha'=>$t->linha],
-            default      => throw new MiniParseError("Esperado operando, encontrado '{$t->valor}'", $linha),
+            default       => throw new MiniParseError("Esperado operando, encontrado '{$t->valor}'", $linha),
         };
-        $pos++;
-
-        if ($pos < count($tokens) && $tokens[$pos]->tipo === 'OP') {
-            $op = $this->opMap[$tokens[$pos]->valor]; $pos++;
-            if ($pos >= count($tokens))
-                throw new MiniParseError("Expressão incompleta após operador", $linha);
-            $t2 = $tokens[$pos];
-            $dir = match($t2->tipo) {
-                'VAR'        => ['no'=>'var', 'nome'=>$t2->valor,'linha'=>$t2->linha],
-                'FVAR'       => ['no'=>'fvar','nome'=>$t2->valor,'linha'=>$t2->linha],
-                'NUM'        => ['no'=>'num', 'valor'=>Lexer::converterNumero($t2->valor),'linha'=>$t2->linha],
-                'INUM'       => ['no'=>'num', 'valor'=>(int)$t2->valor,'linha'=>$t2->linha],
-                'FNUM'       => ['no'=>'fnum','valor'=>(float)$t2->valor,'linha'=>$t2->linha],
-                'FNUM_ALPHA' => ['no'=>'fnum','valor'=>Lexer::converterFloat($t2->valor),'linha'=>$t2->linha],
-                default      => throw new MiniParseError("Esperado operando após operador", $linha),
-            };
-            $pos++;
-            $esq = ['no'=>'binop','op'=>$op,'esq'=>$esq,'dir'=>$dir,'linha'=>$linha];
-        }
-        return [$esq, $pos];
+        return [$no, $pos + 1];
     }
 }
