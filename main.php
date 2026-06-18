@@ -4,6 +4,76 @@ require_once __DIR__ . '/parser.php';
 require_once __DIR__ . '/semantic.php';
 require_once __DIR__ . '/interpreter.php';
 
+// ── Groq API ─────────────────────────────────────────────────────
+define('GROQ_API_KEY', '');//Link da API do Grok
+define('GROQ_MODEL', 'llama-3.3-70b-versatile');
+
+function corrigirComIA(string $codigo, array $erros): string {
+    $errosTexto = implode("\n", array_map(fn($e) =>
+        "- Fase {$e['fase']}: {$e['msg']}" . ($e['linha'] ? " (instrução {$e['linha']})" : ''),
+        $erros
+    ));
+
+    $regras = <<<REGRAS
+Regras da Van Language:
+- Variáveis: n=int (nidade), f=float (fpreco), s=string (snome)
+- Números: |42| ou alfabeto Van (a=0,e=1,i=2,o=3,u=4,z=5,x=6,c=7,v=8,b=9): ei=12
+- Strings: @@texto@@
+- Atribuição: VAR ? EXPR;
+- Print: zec VAR; ou zec @@texto@@ VAR;
+- Input: xec VAR;
+- If: cs COND { ... end  ou com else: cs COND { ... cc { ... end
+- While: wh COND { ... end
+- For: fr VAR ? VALOR; COND; VAR++ (ou VAR--) ... end
+- Função: fn nome() { ... end  — chamada: nome;
+- Operadores aritméticos: + - * /  (com precedência: * antes de +)
+- Comparação: == != < > <= >=
+- Lógicos: ec (AND) oc (OR)
+- Toda instrução termina com ;
+- cs, cc, end, wh, fr, fn NÃO precisam de ;
+- Chamada de função: só nome; (sem parênteses)
+REGRAS;
+
+    $prompt = "$regras\n\nCódigo com erro:\n$codigo\n\nErros encontrados:\n$errosTexto\n\nCorrija o código mantendo a intenção original. Retorne APENAS o código corrigido, sem explicação, sem markdown, sem ```.";
+
+    $payload = json_encode([
+        'model'    => GROQ_MODEL,
+        'messages' => [['role'=>'user','content'=>$prompt]],
+        'temperature' => 0.1,
+        'max_tokens'  => 1024,
+    ]);
+
+    $ch = curl_init('https://api.groq.com/openai/v1/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . GROQ_API_KEY,
+        ],
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $resp = curl_exec($ch);
+    $err  = curl_error($ch);
+    curl_close($ch);
+
+    if ($err) return "ERRO_CURL: $err";
+
+    $data = json_decode($resp, true);
+    return $data['choices'][0]['message']['content'] ?? ('ERRO_API: ' . json_encode($data));
+}
+
+// ── Requisição AJAX de correção ───────────────────────────────
+if (isset($_POST['acao']) && $_POST['acao'] === 'corrigir_ia') {
+    header('Content-Type: application/json');
+    $codigo = $_POST['codigo'] ?? '';
+    $erros  = json_decode($_POST['erros'] ?? '[]', true);
+    $corrigido = corrigirComIA($codigo, $erros);
+    echo json_encode(['codigo' => $corrigido]);
+    exit;
+}
+
 // ── Pipeline ──────────────────────────────────────────────────
 $resultado = ['tokens'=>[],'ast'=>null,'semantica'=>null,'execucao'=>null,'erros'=>[],'fase'=>''];
 $codigoPostado = $_POST['codigo'] ?? '';
@@ -134,20 +204,19 @@ function astHtml(array $no, int $d=0): string {
 [data-tema="blue"] tr:hover td{background:rgba(77,184,255,.04);}
 /* ── TEMA SANGUE ── */
 [data-tema="blood"]{
-  --bg:#2a000b;--surface:#120005;--card:#190007;--border:#4d0012;--border2:#6a001a;
-  --cyan:#ff5252;--purple:#d32f2f;--green:#ff8585;--orange:#ff7e33;--red:#ff1744;
-  --yellow:#ffd740;--teal:#ff5252;--text:#ffebee;--muted:#b71c1c;
+  --bg:#3d0010;--surface:#1a0008;--card:#22000e;--border:#5c0018;--border2:#7a0022;
+  --cyan:#ff6b6b;--purple:#e05555;--green:#ff9999;--orange:#ffaa44;--red:#ff3333;
+  --yellow:#ffcc44;--teal:#ff7788;--text:#ffe0e0;--muted:#9a5555;
 }
-[data-tema="blood"] textarea#codigo{color:#ff5252;background:#0f0003;}
-[data-tema="blood"] textarea#codigo:focus{box-shadow:0 0 0 3px rgba(255,82,82,.15);}
-[data-tema="blood"] .terminal{background:#0a0002;color:#ff8585;}
-[data-tema="blood"] .logo{background:linear-gradient(135deg,#d50000,#ff1744);}
-[data-tema="blood"] .dot{background:#ff1744;box-shadow:0 0 8px #ff1744;}
-[data-tema="blood"] tr:hover td{background:rgba(255,23,68,.05);}
-[data-tema="blood"] .ps.done{color:#ff5252;border-color:rgba(255,82,82,.3);background:rgba(255,82,82,.08);}
-[data-tema="blood"] .tab-btn.active{color:#ff1744;border-bottom-color:#ff1744;}
-[data-tema="blood"] .tab-btn.active .cnt{background:rgba(255,23,68,.15);color:#ff1744;}
-
+[data-tema="blood"] textarea#codigo{color:#ff6b6b;background:#1a0808;}
+[data-tema="blood"] textarea#codigo:focus{box-shadow:0 0 0 3px rgba(255,107,107,.08);}
+[data-tema="blood"] .terminal{background:#150606;color:#ff9999;}
+[data-tema="blood"] .logo{background:linear-gradient(135deg,#ff0000,#cc2255);}
+[data-tema="blood"] .dot{background:#ff4444;box-shadow:0 0 5px #ff4444;}
+[data-tema="blood"] tr:hover td{background:rgba(255,68,68,.04);}
+[data-tema="blood"] .ps.done{color:#ff6666;border-color:rgba(255,102,102,.25);background:rgba(255,102,102,.06);}
+[data-tema="blood"] .tab-btn.active{color:#ff4444;border-bottom-color:#ff4444;}
+[data-tema="blood"] .tab-btn.active .cnt{background:rgba(255,68,68,.15);color:#ff4444;}
 /* ── TEMA VERDE ESCURO ── */
 [data-tema="forest"]{
   --bg:#04140b;--surface:#04140b;--card:#0a1c10;--border:#14301d;--border2:#1d4629;
@@ -176,7 +245,7 @@ function astHtml(array $no, int $d=0): string {
 .theme-btn.t-light{background:linear-gradient(135deg,#f0f2f8,#0077cc);}
 .theme-btn.t-blue{background:linear-gradient(135deg,#020818,#4db8ff);}
 .theme-btn.t-blood{background:linear-gradient(135deg,#3d0010,#ff6b6b);}
-.theme-btn.t-forest{background:linear-gradient(135deg,#e8f5ee,#2ecc71);}
+.theme-btn.t-forest{background:linear-gradient(135deg,#04140b,#00e676);}
 .theme-sep{width:1px;height:20px;background:var(--border);margin:0 4px;}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;overflow-x:hidden;}
@@ -222,6 +291,21 @@ input.vi:focus{border-color:var(--orange);}
   color:#080a0f;font-family:var(--sans);font-weight:800;font-size:.85rem;border:none;border-radius:9px;
   cursor:pointer;transition:opacity .15s,transform .1s;flex-shrink:0;}
 .btn-run:hover{opacity:.88;}.btn-run:active{transform:scale(.98);}
+.btn-ia{
+  width:100%;padding:11px;
+  background:linear-gradient(135deg,#7c5cfc,#a855f7);
+  color:#fff;font-family:var(--sans);font-weight:800;font-size:.85rem;
+  border:none;border-radius:9px;cursor:pointer;
+  transition:opacity .15s,transform .1s;flex-shrink:0;
+  margin-top:-2px;
+}
+.btn-ia:hover{opacity:.88;}.btn-ia:active{transform:scale(.98);}
+.btn-ia:disabled{opacity:.4;cursor:not-allowed;}
+.ia-status{
+  background:rgba(124,92,252,.08);border:1px solid rgba(124,92,252,.25);
+  border-radius:8px;padding:9px 12px;font-family:var(--mono);
+  font-size:.78rem;color:#a29bfe;text-align:center;
+}
 /* Ref */
 .rt{font-size:.68rem;font-weight:700;color:var(--muted);cursor:pointer;letter-spacing:.06em;
   text-transform:uppercase;display:flex;align-items:center;gap:5px;user-select:none;flex-shrink:0;}
@@ -402,6 +486,13 @@ td.ti{color:var(--cyan);}td.tf{color:var(--teal);}td.ts{color:var(--orange);}
 
       <button type="submit" class="btn-run">▶ Compilar &amp; Executar</button>
 
+      <?php if (!empty($resultado['erros'])): ?>
+      <button type="button" class="btn-ia" id="btnIA" onclick="corrigirIA()">
+        ✦ Corrigir com IA
+      </button>
+      <div id="ia-status" class="ia-status" style="display:none"></div>
+      <?php endif; ?>
+
       <div class="rt" onclick="toggleRef()"><span id="ra">▸</span> Referência rápida</div>
       <div class="rb" id="rb">
         <div class="rs">── Tipos de variável</div>
@@ -472,6 +563,10 @@ td.ti{color:var(--cyan);}td.tf{color:var(--teal);}td.ts{color:var(--orange);}
     </div>
 
     <div class="tc">
+      <!-- Dados para o JS -->
+      <div id="erros-data" style="display:none"><?php echo htmlspecialchars(json_encode($resultado['erros'])); ?></div>
+      <div id="codigo-data" style="display:none"><?php echo htmlspecialchars($codigoPostado); ?></div>
+
       <!-- EXECUÇÃO -->
       <div id="tab-exec" class="tp active">
         <?php foreach($resultado['erros'] as $e): ?>
@@ -648,6 +743,156 @@ document.getElementById('codigo').addEventListener('keydown',function(e){
     this.selectionStart=this.selectionEnd=s+2;
   }
 });
+
+/* ── Prévia de confirmação da IA ─────────────────────────────── */
+let _codigoCorrigidoPendente = null;
+
+function _aplicarCorrecao() {
+  if (!_codigoCorrigidoPendente) return;
+  document.getElementById('codigo').value = _codigoCorrigidoPendente;
+  _codigoCorrigidoPendente = null;
+  document.getElementById('ia-preview-box')?.remove();
+  const status = document.getElementById('ia-status');
+  status.style.background  = 'rgba(0,255,157,.08)';
+  status.style.borderColor = 'rgba(0,255,157,.25)';
+  status.style.color       = '#00ff9d';
+  status.textContent       = '✓ Correção aplicada! Clique em Compilar para testar.';
+}
+
+function _cancelarCorrecao() {
+  _codigoCorrigidoPendente = null;
+  document.getElementById('ia-preview-box')?.remove();
+  const status = document.getElementById('ia-status');
+  status.style.background  = 'rgba(255,159,67,.08)';
+  status.style.borderColor = 'rgba(255,159,67,.25)';
+  status.style.color       = '#ff9f43';
+  status.textContent       = '⚠ Correção cancelada. Código original mantido.';
+}
+
+function _escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function _mostrarPrevia(codigoOriginal, codigoCorrigido) {
+  document.getElementById('ia-preview-box')?.remove();
+
+  const linhasOrig = codigoOriginal.split('\n');
+  const linhasCorr = codigoCorrigido.split('\n');
+  const maxLen     = Math.max(linhasOrig.length, linhasCorr.length);
+  let diffHtml     = '';
+  let totalAlteradas = 0;
+
+  for (let i = 0; i < maxLen; i++) {
+    const lo = linhasOrig[i] ?? '';
+    const lc = linhasCorr[i] ?? '';
+    if (lo === lc) {
+      diffHtml += `<div style="color:var(--muted);font-size:.72rem;padding:1px 0;white-space:pre">`
+                + `<span style="opacity:.4">${String(i+1).padStart(3,' ')} </span>`
+                + _escHtml(lc) + `</div>`;
+    } else {
+      totalAlteradas++;
+      if (lo !== '') {
+        diffHtml += `<div style="background:rgba(255,71,87,.12);color:#ff6b6b;font-size:.72rem;padding:1px 0;white-space:pre">`
+                  + `<span style="opacity:.5">${String(i+1).padStart(3,' ')} - </span>`
+                  + _escHtml(lo) + `</div>`;
+      }
+      if (lc !== '') {
+        diffHtml += `<div style="background:rgba(0,255,157,.10);color:#00ff9d;font-size:.72rem;padding:1px 0;white-space:pre">`
+                  + `<span style="opacity:.5">${String(i+1).padStart(3,' ')} + </span>`
+                  + _escHtml(lc) + `</div>`;
+      }
+    }
+  }
+
+  const box = document.createElement('div');
+  box.id = 'ia-preview-box';
+  box.style.cssText = `
+    background:var(--card);border:1px solid var(--border2);border-radius:9px;
+    padding:12px 14px;margin-top:6px;display:flex;flex-direction:column;gap:8px;
+  `;
+  box.innerHTML = `
+    <div style="font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+                color:var(--purple);font-family:var(--mono);display:flex;align-items:center;gap:6px">
+      <span style="font-size:.8rem">✦</span> Prévia da Correção
+      <span style="background:rgba(124,92,252,.15);color:#a29bfe;font-size:.62rem;
+                   padding:1px 7px;border-radius:10px;font-weight:700">
+        ${totalAlteradas} linha${totalAlteradas!==1?'s':''} alterada${totalAlteradas!==1?'s':''}
+      </span>
+    </div>
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:7px;
+                padding:10px;max-height:220px;overflow-y:auto;font-family:var(--mono)">
+      ${diffHtml}
+    </div>
+    <div style="display:flex;gap:7px">
+      <button onclick="_aplicarCorrecao()"
+        style="flex:1;padding:8px;background:linear-gradient(135deg,var(--green),var(--teal));
+               color:#080a0f;font-family:var(--sans);font-weight:800;font-size:.8rem;
+               border:none;border-radius:7px;cursor:pointer">
+        ✓ Aplicar Correção
+      </button>
+      <button onclick="_cancelarCorrecao()"
+        style="flex:1;padding:8px;background:var(--bg);
+               color:var(--muted);font-family:var(--sans);font-weight:700;font-size:.8rem;
+               border:1px solid var(--border);border-radius:7px;cursor:pointer">
+        ✗ Cancelar
+      </button>
+    </div>
+  `;
+
+  const statusEl = document.getElementById('ia-status');
+  statusEl.parentNode.insertBefore(box, statusEl.nextSibling);
+}
+
+async function corrigirIA() {
+  const btn    = document.getElementById('btnIA');
+  const status = document.getElementById('ia-status');
+  const editor = document.getElementById('codigo');
+  const erros  = document.getElementById('erros-data')?.textContent || '[]';
+
+  document.getElementById('ia-preview-box')?.remove();
+  _codigoCorrigidoPendente = null;
+
+  btn.disabled    = true;
+  btn.textContent = '⏳ Corrigindo...';
+  status.style.display      = 'block';
+  status.style.background   = 'rgba(124,92,252,.08)';
+  status.style.borderColor  = 'rgba(124,92,252,.25)';
+  status.style.color        = '#a29bfe';
+  status.textContent        = 'Enviando código para a IA...';
+
+  try {
+    const form = new FormData();
+    form.append('acao',   'corrigir_ia');
+    form.append('codigo', editor.value);
+    form.append('erros',  erros);
+
+    const resp = await fetch(window.location.href, { method:'POST', body:form });
+    const data = await resp.json();
+
+    if (data.codigo && !data.codigo.startsWith('ERRO')) {
+      _codigoCorrigidoPendente = data.codigo;
+
+      status.style.background  = 'rgba(124,92,252,.08)';
+      status.style.borderColor = 'rgba(124,92,252,.25)';
+      status.style.color       = '#a29bfe';
+      status.textContent       = '✦ IA sugeriu uma correção. Revise abaixo antes de aplicar:';
+
+      _mostrarPrevia(editor.value, data.codigo);
+
+    } else {
+      status.style.background  = 'rgba(255,71,87,.08)';
+      status.style.borderColor = 'rgba(255,71,87,.25)';
+      status.style.color       = '#ff6b6b';
+      status.textContent       = '✗ Erro ao chamar a IA: ' + (data.codigo || 'sem resposta');
+    }
+  } catch(e) {
+    status.style.color = '#ff6b6b';
+    status.textContent = '✗ Erro de conexão: ' + e.message;
+  }
+
+  btn.disabled    = false;
+  btn.textContent = '✦ Corrigir com IA';
+}
 </script>
 </body>
 </html>
